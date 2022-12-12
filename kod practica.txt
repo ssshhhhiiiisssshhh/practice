@@ -1,0 +1,223 @@
+import os
+import re
+import fitz
+import argparse
+
+
+def pdf_find(path):
+    """ Find documents with pdf extension and correct doc_id """
+    documents = os.listdir(path)
+    result_documents = []
+    result_pages = []
+    title_num = []
+    for document in documents:
+
+        # finding doc with pdf extension
+        if document.split(".")[-1].lower() == "pdf":
+
+            # pattern for document id
+            match = re.search(r'(?:СТО|Р) Газпром (?:РД ){0,1}[\.\d]{1,7}(?:-[\.\d]{1,4}){0,1}(?:-\d{1,4}){0,1}-\d{4}',
+                              document)
+            id_document = match[0] if match else None
+
+            # if doc has right id call function to find terms
+            if id_document is not None:
+                use_func = find_terms(path, document)
+                result_pages.append(use_func[0])
+                title_num.append(use_func[1])
+                result_documents.append(document)
+    return result_documents, result_pages, title_num
+
+
+def find_terms(path, document):
+    """
+    Find terms in content
+    :returns start_page and end_page
+    """
+    document_root_path = os.path.join(path, document)
+    pdf_document = fitz.open(document_root_path)
+
+    # defining terms that doc must have in
+    first_cond = "Термины"
+    second_cond = "определения"
+
+    # define start_page and end_page
+    term_start_page = -1
+    term_end_page = -1
+    term_current_page = -1
+
+    # iterating by page to find start_page and end_page
+    count = 0
+    res = []
+    for current_page in range(len(pdf_document)):
+        page = pdf_document.load_page(current_page)
+        page_text = page.get_text().replace(" ", "").replace(".", "").split("\n")
+        for word in page_text:
+            if word == "Содержание":
+                count += 1
+                res = page_text
+                break
+            if count > 0:
+                break
+    title_num = 0
+    for i in range(len(res)):
+        if first_cond in res[i] and second_cond in res[i]:
+            tmp = 0
+            try:
+                title_num = int(res[i][0])
+            except ValueError:
+                title_num = int(res[i - 1])
+            try:
+                term_start_page = int(res[i][-1])
+                tmp = i + 1
+            except ValueError:
+                term_start_page = int(res[i + 1])
+                tmp = i + 2
+            for y in range(tmp, len(res)):
+                try:
+                    if int(res[y][0]) == title_num + 1:
+                        try:
+                            term_end_page = int(res[y][-1])
+                            break
+                        except ValueError:
+                            try:
+                                term_end_page = int(res[y + 1])
+                            except ValueError:
+                                term_end_page = int(res[y + 2])
+                            break
+                except ValueError:
+                    term_end_page = int(res[y][-2] + res[y][-1])
+                    break
+            break
+    result_pages = [term_start_page, term_end_page]
+    return result_pages, title_num
+
+
+def get_all_pages(document_path, doc_pages):
+    """ Get all pages with needed terms """
+    pdf_document = fitz.Document(document_path)
+    pages_in_doc = []
+    for current_page in range(len(pdf_document)):
+        page = pdf_document.load_page(current_page)
+        arr = page.get_text().replace(" ", "").replace(".", "").split("\n")
+        rev_arr = list(reversed(arr))
+        for i in range(doc_pages[0], doc_pages[1] + 1):
+            if len(arr) > 1 and (arr[0].strip() == str(i) or arr[1].strip() == str(i)):
+                pages_in_doc.append(current_page)
+                break
+            pattern = re.compile("\d")
+            if len(rev_arr) > 1 and rev_arr[1] == str(i) and arr[0].strip() != str(i) and \
+                    re.fullmatch(pattern, rev_arr[-1]) is None:
+                pages_in_doc.append(current_page)
+                break
+    return pages_in_doc
+
+
+def analyze_text(document_path, pages_in_doc, chapter):
+    """ Analyze pages text and find terms """
+    pdf_document = fitz.Document(document_path)
+    print(document_path, pages_in_doc)
+    all_separators = []
+    all_text = []
+    for page_num in pages_in_doc:
+        page = pdf_document.load_page(page_num)
+        text = page.get_text().rsplit(":")
+        new_text = []
+        for i in range(len(text)):
+            new_text.append(text[i].replace("\n", " ").replace("- ", ""))
+        pattern = re.compile(f"(\s{chapter}\.[1-9]+\s+)|\s({chapter}\.[1-9]\.[1-9]+\s+)")
+        for i in range(len(new_text)):
+            match = re.findall(pattern, new_text[i])
+            res = match[0] if match else None
+            # print(res, new_text[i])
+            all_separators.append(res)
+            all_text.append(new_text[i])
+    while True:
+        if all_separators and all_separators[0] is None:
+            del all_separators[0]
+            del all_text[0]
+        else:
+            break
+    while True:
+        if all_separators and all_separators[-1] == all_separators[-2]:
+            del all_separators[-1]
+            del all_text[-1]
+        else:
+            break
+    if all_separators and all_separators[0] and all_separators[1] and all_separators[0][1] == all_separators[1][0]:
+        del all_separators[0]
+        del all_text[0]
+    term_code = []
+    while True:
+        count = 0
+        for i in range(len(all_text)):
+            count += 1
+            if len(all_text[i]) < 20:
+                del all_text[i]
+                del all_separators[i]
+                break
+        if count == len(all_text):
+            break
+
+    # filling terms codes
+    for i in range(len(all_separators)):
+        if all_separators[i] and len(all_separators[i][0]) > 0:
+            term_code.append(all_separators[i][0].strip())
+        elif all_separators[i] and len(all_separators[i][1]) > 0:
+            term_code.append(all_separators[i][1].strip())
+        else:
+            term_code.append("")
+    result_terms = []
+    result_term_codes = []
+    result_term_defs = []
+    if term_code and len(term_code[0]) > 0:
+        result_term_codes.append(term_code[0].strip())
+        result_terms.append(all_text[0].split(term_code[0])[1].strip())
+    # print(result_terms, result_term_codes)
+    for i in range(1, len(term_code) - 1):
+        # print(term_code[i], all_text[i])
+        if len(term_code[i]) == 0 and len(term_code[i-1]) > 0:
+            result_term_defs.append(all_text[i].strip())
+        elif len(term_code[i]) > 0 and len(term_code[i-1]) == 0:
+            if "Газпром" in all_text[i].split(term_code[i])[0]:
+                result_term_codes.append(term_code[i].strip())
+                result_terms.append(all_text[i].split(term_code[i])[1].strip())
+            else:
+                result_term_codes.append(term_code[i].strip())
+                result_terms.append(all_text[i].split(term_code[i])[1].strip())
+                result_term_defs.append(all_text[i].split(term_code[i])[0].strip())
+        else:
+            try:
+                result_term_codes.append(term_code[i].strip())
+                result_terms.append(all_text[i].split(term_code[i])[1].strip())
+                result_term_defs.append(all_text[i].split(term_code[i])[0].strip())
+            except ValueError:
+                pass
+    try:
+        result_term_defs.append(all_text[len(all_text) - 1].split(" " + str(chapter + 1) + " ")[0].strip())
+    except IndexError:
+        pass
+    for i, j, k in zip(result_term_codes, result_terms, result_term_defs):
+        print(f"{i}: {j} - {k}")
+
+
+def argument_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dir', '-d', help="input path to root dir with pdf files")
+    my_namespace = parser.parse_args()
+    directory_path = my_namespace.dir
+    return directory_path
+
+
+if __name__ == "__main__":
+    root_path = argument_parser()
+    dirs = os.listdir(root_path)
+    for directory in dirs:
+        folder_path = os.path.join(root_path, directory)
+        print(folder_path)
+        doc_and_pages = pdf_find(folder_path)
+        for doc, pages, sep in zip(doc_and_pages[0], doc_and_pages[1], doc_and_pages[2]):
+            if pages[0] != -1:
+                doc_path = os.path.join(folder_path, doc)
+                pages_in_document = get_all_pages(doc_path, pages)
+                analyze_text(doc_path, pages_in_document, sep)
